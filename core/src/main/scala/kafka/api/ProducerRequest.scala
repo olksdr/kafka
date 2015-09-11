@@ -18,14 +18,15 @@
 package kafka.api
 
 import java.nio._
-import kafka.message._
+
 import kafka.api.ApiUtils._
 import kafka.common._
+import kafka.message._
+import kafka.network.{RequestOrResponseSend, RequestChannel}
 import kafka.network.RequestChannel.Response
-import kafka.network.{RequestChannel, BoundedByteBufferSend}
 
 object ProducerRequest {
-  val CurrentVersion = 0.shortValue
+  val CurrentVersion = 1.shortValue
 
   def readFrom(buffer: ByteBuffer): ProducerRequest = {
     val versionId: Short = buffer.getShort
@@ -136,7 +137,7 @@ case class ProducerRequest(versionId: Short = ProducerRequest.CurrentVersion,
           (topicAndPartition, ProducerResponseStatus(ErrorMapping.codeFor(e.getClass.asInstanceOf[Class[Throwable]]), -1l))
       }
       val errorResponse = ProducerResponse(correlationId, producerResponseStatus)
-      requestChannel.sendResponse(new Response(request, new BoundedByteBufferSend(errorResponse)))
+      requestChannel.sendResponse(new Response(request, new RequestOrResponseSend(request.connectionId, errorResponse)))
     }
   }
 

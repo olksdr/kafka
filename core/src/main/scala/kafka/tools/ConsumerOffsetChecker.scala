@@ -107,6 +107,8 @@ object ConsumerOffsetChecker extends Logging {
   }
 
   def main(args: Array[String]) {
+    warn("WARNING: ConsumerOffsetChecker is deprecated and will be dropped in releases following 0.9.0. Use ConsumerGroupCommand instead.")
+
     val parser = new OptionParser()
 
     val zkConnectOpt = parser.accepts("zookeeper", "ZooKeeper connect string.").
@@ -162,7 +164,7 @@ object ConsumerOffsetChecker extends Logging {
 
       debug("Sending offset fetch request to coordinator %s:%d.".format(channel.host, channel.port))
       channel.send(OffsetFetchRequest(group, topicPartitions))
-      val offsetFetchResponse = OffsetFetchResponse.readFrom(channel.receive().buffer)
+      val offsetFetchResponse = OffsetFetchResponse.readFrom(channel.receive().payload())
       debug("Received offset fetch response %s.".format(offsetFetchResponse))
 
       offsetFetchResponse.requestInfo.foreach { case (topicAndPartition, offsetAndMetadata) =>

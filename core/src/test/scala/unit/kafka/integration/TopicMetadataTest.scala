@@ -17,37 +17,44 @@
 
 package kafka.integration
 
-import org.apache.kafka.common.protocol.SecurityProtocol
-import org.scalatest.junit.JUnit3Suite
-import kafka.zk.ZooKeeperTestHarness
-import kafka.admin.AdminUtils
 import java.nio.ByteBuffer
-import junit.framework.Assert._
-import kafka.cluster.{BrokerEndPoint, Broker}
+
+import kafka.admin.AdminUtils
+import kafka.api.{TopicMetadataRequest, TopicMetadataResponse}
+import kafka.client.ClientUtils
+import kafka.cluster.{Broker, BrokerEndPoint}
+import kafka.common.ErrorMapping
+import kafka.server.{KafkaConfig, KafkaServer, NotRunning}
 import kafka.utils.TestUtils
 import kafka.utils.TestUtils._
-import kafka.server.{KafkaServer, KafkaConfig}
-import kafka.api.TopicMetadataRequest
-import kafka.common.ErrorMapping
-import kafka.client.ClientUtils
+import kafka.zk.ZooKeeperTestHarness
+import org.apache.kafka.common.protocol.SecurityProtocol
+import org.junit.Assert._
+import org.junit.{Test, After, Before}
 
-class TopicMetadataTest extends JUnit3Suite with ZooKeeperTestHarness {
+class TopicMetadataTest extends ZooKeeperTestHarness {
   private var server1: KafkaServer = null
   var brokerEndPoints: Seq[BrokerEndPoint] = null
+  var adHocConfigs: Seq[KafkaConfig] = null
+  val numConfigs: Int = 4
 
+  @Before
   override def setUp() {
     super.setUp()
-    val props = createBrokerConfigs(1, zkConnect)
-    val configs = props.map(KafkaConfig.fromProps)
+    val props = createBrokerConfigs(numConfigs, zkConnect)
+    val configs: Seq[KafkaConfig] = props.map(KafkaConfig.fromProps)
+    adHocConfigs = configs.takeRight(configs.size - 1) // Started and stopped by individual test cases
     server1 = TestUtils.createServer(configs.head)
     brokerEndPoints = Seq(new Broker(server1.config.brokerId, server1.config.hostName, server1.boundPort()).getBrokerEndPoint(SecurityProtocol.PLAINTEXT))
   }
 
+  @After
   override def tearDown() {
     server1.shutdown()
     super.tearDown()
   }
 
+  @Test
   def testTopicMetadataRequest {
     // create topic
     val topic = "test"
@@ -64,6 +71,7 @@ class TopicMetadataTest extends JUnit3Suite with ZooKeeperTestHarness {
     assertEquals(topicMetadataRequest, deserializedMetadataRequest)
   }
 
+  @Test
   def testBasicTopicMetadata {
     // create topic
     val topic = "test"
@@ -81,6 +89,7 @@ class TopicMetadataTest extends JUnit3Suite with ZooKeeperTestHarness {
     assertEquals(1, partitionMetadata.head.replicas.size)
   }
 
+  @Test
   def testGetAllTopicMetadata {
     // create topic
     val topic1 = "testGetAllTopicMetadata1"
@@ -105,6 +114,7 @@ class TopicMetadataTest extends JUnit3Suite with ZooKeeperTestHarness {
     assertEquals(1, partitionMetadataTopic2.head.replicas.size)
   }
 
+  @Test
   def testAutoCreateTopic {
     // auto create topic
     val topic = "testAutoCreateTopic"
@@ -129,5 +139,153 @@ class TopicMetadataTest extends JUnit3Suite with ZooKeeperTestHarness {
     assertEquals("Expecting partition id to be 0", 0, partitionMetadata.head.partitionId)
     assertEquals(1, partitionMetadata.head.replicas.size)
     assertTrue(partitionMetadata.head.leader.isDefined)
+  }
+
+  @Test
+  def testAutoCreateTopicWithCollision {
+    // auto create topic
+    val topic1 = "testAutoCreate_Topic"
+    val topic2 = "testAutoCreate.Topic"
+    var topicsMetadata = ClientUtils.fetchTopicMetadata(Set(topic1, topic2), brokerEndPoints, "TopicMetadataTest-testAutoCreateTopic",
+      2000,0).topicsMetadata
+    assertEquals("Expecting metadata for 2 topics", 2, topicsMetadata.size)
+    assertEquals("Expecting metadata for topic1", topic1, topicsMetadata.head.topic)
+    assertEquals(ErrorMapping.LeaderNotAvailableCode, topicsMetadata.head.errorCode)
+    assertEquals("Expecting metadata for topic2", topic2, topicsMetadata(1).topic)
+    assertEquals("Expecting InvalidTopicCode for topic2 metadata", ErrorMapping.InvalidTopicCode, topicsMetadata(1).errorCode)
+
+    // wait for leader to be elected
+    TestUtils.waitUntilLeaderIsElectedOrChanged(zkClient, topic1, 0)
+    TestUtils.waitUntilMetadataIsPropagated(Seq(server1), topic1, 0)
+
+    // retry the metadata for the first auto created topic
+    topicsMetadata = ClientUtils.fetchTopicMetadata(Set(topic1), brokerEndPoints, "TopicMetadataTest-testBasicTopicMetadata",
+      2000,0).topicsMetadata
+    assertEquals(ErrorMapping.NoError, topicsMetadata.head.errorCode)
+    assertEquals(ErrorMapping.NoError, topicsMetadata.head.partitionsMetadata.head.errorCode)
+    var partitionMetadata = topicsMetadata.head.partitionsMetadata
+    assertEquals("Expecting metadata for 1 partition", 1, partitionMetadata.size)
+    assertEquals("Expecting partition id to be 0", 0, partitionMetadata.head.partitionId)
+    assertEquals(1, partitionMetadata.head.replicas.size)
+    assertTrue(partitionMetadata.head.leader.isDefined)
+  }
+
+  private def checkIsr(servers: Seq[KafkaServer]): Unit = {
+    val activeBrokers: Seq[KafkaServer] = servers.filter(x => x.brokerState.currentState != NotRunning.state)
+    val expectedIsr: Seq[BrokerEndPoint] = activeBrokers.map(
+      x => new BrokerEndPoint(x.config.brokerId,
+                              if (x.config.hostName.nonEmpty) x.config.hostName else "localhost",
+                              x.boundPort())
+    )
+
+    // Assert that topic metadata at new brokers is updated correctly
+    activeBrokers.foreach(x => {
+      var metadata: TopicMetadataResponse = new TopicMetadataResponse(Seq(), Seq(), -1)
+      waitUntilTrue(() => {
+        metadata = ClientUtils.fetchTopicMetadata(
+                                Set.empty,
+                                Seq(new BrokerEndPoint(
+                                                  x.config.brokerId,
+                                                  if (x.config.hostName.nonEmpty) x.config.hostName else "localhost",
+                                                  x.boundPort())),
+                                "TopicMetadataTest-testBasicTopicMetadata",
+                                2000, 0)
+        metadata.topicsMetadata.nonEmpty &&
+          metadata.topicsMetadata.head.partitionsMetadata.nonEmpty &&
+          expectedIsr == metadata.topicsMetadata.head.partitionsMetadata.head.isr
+      },
+        "Topic metadata is not correctly updated for broker " + x + ".\n" +
+        "Expected ISR: " + expectedIsr + "\n" +
+        "Actual ISR  : " + (if (metadata.topicsMetadata.nonEmpty &&
+                                metadata.topicsMetadata.head.partitionsMetadata.nonEmpty)
+                              metadata.topicsMetadata.head.partitionsMetadata.head.isr
+                            else
+                              ""), 6000L)
+    })
+  }
+
+  @Test
+  def testIsrAfterBrokerShutDownAndJoinsBack {
+    val numBrokers = 2 //just 2 brokers are enough for the test
+
+    // start adHoc brokers
+    val adHocServers = adHocConfigs.take(numBrokers - 1).map(p => createServer(p))
+    val allServers: Seq[KafkaServer] = Seq(server1) ++ adHocServers
+
+    // create topic
+    val topic: String = "test"
+    AdminUtils.createTopic(zkClient, topic, 1, numBrokers)
+
+    // shutdown a broker
+    adHocServers.last.shutdown()
+    adHocServers.last.awaitShutdown()
+
+    // startup a broker
+    adHocServers.last.startup()
+
+    // check metadata is still correct and updated at all brokers
+    checkIsr(allServers)
+
+    // shutdown adHoc brokers
+    adHocServers.map(p => p.shutdown())
+  }
+
+  private def checkMetadata(servers: Seq[KafkaServer], expectedBrokersCount: Int): Unit = {
+    var topicMetadata: TopicMetadataResponse = new TopicMetadataResponse(Seq(), Seq(), -1)
+
+    // Get topic metadata from old broker
+    // Wait for metadata to get updated by checking metadata from a new broker
+    waitUntilTrue(() => {
+    topicMetadata = ClientUtils.fetchTopicMetadata(
+      Set.empty, brokerEndPoints, "TopicMetadataTest-testBasicTopicMetadata", 2000, 0)
+    topicMetadata.brokers.size == expectedBrokersCount},
+      "Alive brokers list is not correctly propagated by coordinator to brokers"
+    )
+
+    // Assert that topic metadata at new brokers is updated correctly
+    servers.filter(x => x.brokerState.currentState != NotRunning.state).foreach(x =>
+      waitUntilTrue(() =>
+        topicMetadata == ClientUtils.fetchTopicMetadata(
+          Set.empty,
+          Seq(new Broker(x.config.brokerId,
+            x.config.hostName,
+            x.boundPort()).getBrokerEndPoint(SecurityProtocol.PLAINTEXT)),
+          "TopicMetadataTest-testBasicTopicMetadata",
+          2000, 0), "Topic metadata is not correctly updated"))
+  }
+
+
+  @Test
+  def testAliveBrokerListWithNoTopics {
+    checkMetadata(Seq(server1), 1)
+  }
+
+  @Test
+  def testAliveBrokersListWithNoTopicsAfterNewBrokerStartup {
+    var adHocServers = adHocConfigs.takeRight(adHocConfigs.size - 1).map(p => createServer(p))
+
+    checkMetadata(adHocServers, numConfigs - 1)
+
+    // Add a broker
+    adHocServers = adHocServers ++ Seq(createServer(adHocConfigs.head))
+
+    checkMetadata(adHocServers, numConfigs)
+    adHocServers.map(p => p.shutdown())
+  }
+
+
+  @Test
+  def testAliveBrokersListWithNoTopicsAfterABrokerShutdown {
+    val adHocServers = adHocConfigs.map(p => createServer(p))
+
+    checkMetadata(adHocServers, numConfigs)
+
+    // Shutdown a broker
+    adHocServers.last.shutdown()
+    adHocServers.last.awaitShutdown()
+
+    checkMetadata(adHocServers, numConfigs - 1)
+
+    adHocServers.map(p => p.shutdown())
   }
 }

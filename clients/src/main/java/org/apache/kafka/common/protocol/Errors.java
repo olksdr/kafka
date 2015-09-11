@@ -20,6 +20,9 @@ import java.util.HashMap;
 import java.util.Map;
 
 import org.apache.kafka.common.errors.*;
+import org.apache.kafka.common.errors.ControllerMovedException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * This class contains all the client-server errors--those errors that must be sent from the server to the client. These
@@ -43,21 +46,24 @@ public enum Errors {
             new NotLeaderForPartitionException("This server is not the leader for that topic-partition.")),
     REQUEST_TIMED_OUT(7,
             new TimeoutException("The request timed out.")),
-    // TODO: errorCode 8 for BrokerNotAvailable
+    BROKER_NOT_AVAILABLE(8,
+            new BrokerNotAvailableException("The broker is not available.")),
     REPLICA_NOT_AVAILABLE(9,
             new ApiException("The replica is not available for the requested topic-partition")),
     MESSAGE_TOO_LARGE(10,
             new RecordTooLargeException("The request included a message larger than the max message size the server will accept.")),
+    STALE_CONTROLLER_EPOCH(11,
+            new ControllerMovedException("The controller moved to another broker.")),
     OFFSET_METADATA_TOO_LARGE(12,
             new OffsetMetadataTooLarge("The metadata field of the offset request was too large.")),
     NETWORK_EXCEPTION(13,
             new NetworkException("The server disconnected before a response was received.")),
     OFFSET_LOAD_IN_PROGRESS(14,
-            new ApiException("The coordinator is loading offsets and can't process requests.")),
+            new OffsetLoadInProgressException("The coordinator is loading offsets and can't process requests.")),
     CONSUMER_COORDINATOR_NOT_AVAILABLE(15,
-            new ApiException("The coordinator is not available.")),
+            new ConsumerCoordinatorNotAvailableException("The coordinator is not available.")),
     NOT_COORDINATOR_FOR_CONSUMER(16,
-            new ApiException("This is not the correct co-ordinator for this consumer.")),
+            new NotCoordinatorForConsumerException("This is not the correct coordinator for this consumer.")),
     INVALID_TOPIC_EXCEPTION(17,
             new InvalidTopicException("The request attempted to perform an operation on an invalid topic.")),
     RECORD_LIST_TOO_LARGE(18,
@@ -69,15 +75,22 @@ public enum Errors {
     INVALID_REQUIRED_ACKS(21,
             new InvalidRequiredAcksException("Produce request specified an invalid value for required acks.")),
     ILLEGAL_GENERATION(22,
-            new ApiException("Specified consumer generation id is not valid.")),
+            new IllegalGenerationException("Specified consumer generation id is not valid.")),
     INCONSISTENT_PARTITION_ASSIGNMENT_STRATEGY(23,
             new ApiException("The request partition assignment strategy does not match that of the group.")),
     UNKNOWN_PARTITION_ASSIGNMENT_STRATEGY(24,
             new ApiException("The request partition assignment strategy is unknown to the broker.")),
     UNKNOWN_CONSUMER_ID(25,
-            new ApiException("The coordinator is not aware of this consumer.")),
+            new UnknownConsumerIdException("The coordinator is not aware of this consumer.")),
     INVALID_SESSION_TIMEOUT(26,
-            new ApiException("The session timeout is not within an acceptable range."));
+            new ApiException("The session timeout is not within an acceptable range.")),
+    COMMITTING_PARTITIONS_NOT_ASSIGNED(27,
+            new ApiException("Some of the committing partitions are not assigned the committer")),
+    INVALID_COMMIT_OFFSET_SIZE(28,
+            new ApiException("The committing offset data size is not valid")),
+    AUTHORIZATION_FAILED(29, new ApiException("Request is not authorized."));
+
+    private static final Logger log = LoggerFactory.getLogger(Errors.class);
 
     private static Map<Class<?>, Errors> classToError = new HashMap<Class<?>, Errors>();
     private static Map<Short, Errors> codeToError = new HashMap<Short, Errors>();
@@ -126,11 +139,16 @@ public enum Errors {
      */
     public static Errors forCode(short code) {
         Errors error = codeToError.get(code);
-        return error == null ? UNKNOWN : error;
+        if (error != null) {
+            return error;
+        } else {
+            log.warn("Unexpected error code: {}.", code);
+            return UNKNOWN;
+        }
     }
 
     /**
-     * Return the error instance associated with this exception (or UKNOWN if there is none)
+     * Return the error instance associated with this exception (or UNKNOWN if there is none)
      */
     public static Errors forException(Throwable t) {
         Errors error = classToError.get(t.getClass());

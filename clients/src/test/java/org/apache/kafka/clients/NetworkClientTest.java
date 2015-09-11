@@ -52,6 +52,8 @@ public class NetworkClientTest {
     private Cluster cluster = TestUtils.singletonCluster("test", nodeId);
     private Node node = cluster.nodes().get(0);
     private NetworkClient client = new NetworkClient(selector, metadata, "mock", Integer.MAX_VALUE, 0, 64 * 1024, 64 * 1024);
+    private NetworkClient clientWithStaticNodes = new NetworkClient(selector, new ManualMetadataUpdater(Arrays.asList(node)),
+            "mock-static", Integer.MAX_VALUE, 0, 64 * 1024, 64 * 1024);
 
     @Before
     public void setup() {
@@ -65,7 +67,7 @@ public class NetworkClientTest {
         client.poll(1, time.milliseconds());
         selector.clear();
         assertTrue("Now the client is ready", client.ready(node, time.milliseconds()));
-        selector.disconnect(node.id());
+        selector.disconnect(node.idString());
         client.poll(1, time.milliseconds());
         selector.clear();
         assertFalse("After we forced the disconnection the client is no longer ready.", client.ready(node, time.milliseconds()));
@@ -74,7 +76,7 @@ public class NetworkClientTest {
 
     @Test(expected = IllegalStateException.class)
     public void testSendToUnreadyNode() {
-        RequestSend send = new RequestSend(5,
+        RequestSend send = new RequestSend("5",
                                            client.nextRequestHeader(ApiKeys.METADATA),
                                            new MetadataRequest(Arrays.asList("test")).toStruct());
         ClientRequest request = new ClientRequest(time.milliseconds(), false, send, null);
@@ -84,15 +86,43 @@ public class NetworkClientTest {
 
     @Test
     public void testSimpleRequestResponse() {
+        checkSimpleRequestResponse(client);
+    }
+
+    @Test
+    public void testSimpleRequestResponseWithStaticNodes() {
+        checkSimpleRequestResponse(clientWithStaticNodes);
+    }
+
+    @Test
+    public void testClose() {
+        client.ready(node, time.milliseconds());
+        awaitReady(client, node);
+        client.poll(1, time.milliseconds());
+        assertTrue("The client should be ready", client.isReady(node, time.milliseconds()));
+
         ProduceRequest produceRequest = new ProduceRequest((short) 1, 1000, Collections.<TopicPartition, ByteBuffer>emptyMap());
         RequestHeader reqHeader = client.nextRequestHeader(ApiKeys.PRODUCE);
-        RequestSend send = new RequestSend(node.id(), reqHeader, produceRequest.toStruct());
+        RequestSend send = new RequestSend(node.idString(), reqHeader, produceRequest.toStruct());
+        ClientRequest request = new ClientRequest(time.milliseconds(), true, send, null);
+        client.send(request);
+        assertEquals("There should be 1 in-flight request after send", 1, client.inFlightRequestCount(node.idString()));
+
+        client.close(node.idString());
+        assertEquals("There should be no in-flight request after close", 0, client.inFlightRequestCount(node.idString()));
+        assertFalse("Connection should not be ready after close", client.isReady(node, 0));
+    }
+
+    private void checkSimpleRequestResponse(NetworkClient networkClient) {
+        ProduceRequest produceRequest = new ProduceRequest((short) 1, 1000, Collections.<TopicPartition, ByteBuffer>emptyMap());
+        RequestHeader reqHeader = networkClient.nextRequestHeader(ApiKeys.PRODUCE);
+        RequestSend send = new RequestSend(node.idString(), reqHeader, produceRequest.toStruct());
         TestCallbackHandler handler = new TestCallbackHandler();
         ClientRequest request = new ClientRequest(time.milliseconds(), true, send, handler);
-        awaitReady(client, node);
-        client.send(request);
-        client.poll(1, time.milliseconds());
-        assertEquals(1, client.inFlightRequestCount());
+        awaitReady(networkClient, node);
+        networkClient.send(request);
+        networkClient.poll(1, time.milliseconds());
+        assertEquals(1, networkClient.inFlightRequestCount());
         ResponseHeader respHeader = new ResponseHeader(reqHeader.correlationId());
         Struct resp = new Struct(ProtoUtils.currentResponseSchema(ApiKeys.PRODUCE.id));
         resp.set("responses", new Object[0]);
@@ -101,8 +131,8 @@ public class NetworkClientTest {
         respHeader.writeTo(buffer);
         resp.writeTo(buffer);
         buffer.flip();
-        selector.completeReceive(new NetworkReceive(node.id(), buffer));
-        List<ClientResponse> responses = client.poll(1, time.milliseconds());
+        selector.completeReceive(new NetworkReceive(node.idString(), buffer));
+        List<ClientResponse> responses = networkClient.poll(1, time.milliseconds());
         assertEquals(1, responses.size());
         assertTrue("The handler should have executed.", handler.executed);
         assertTrue("Should have a response body.", handler.response.hasResponse());

@@ -16,20 +16,37 @@
  */
 package org.apache.kafka.clients.consumer;
 
-import static org.junit.Assert.*;
-
-import java.util.Iterator;
-
 import org.apache.kafka.common.TopicPartition;
 import org.junit.Test;
 
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Iterator;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+
 public class MockConsumerTest {
     
-    private MockConsumer<String, String> consumer = new MockConsumer<String, String>();
+    private MockConsumer<String, String> consumer = new MockConsumer<String, String>(OffsetResetStrategy.EARLIEST);
 
     @Test
     public void testSimpleMock() {
-        consumer.subscribe("topic");
+        consumer.subscribe(Arrays.asList("test"), new ConsumerRebalanceListener() {
+            @Override
+            public void onPartitionsAssigned(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
+
+            }
+
+            @Override
+            public void onPartitionsRevoked(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
+
+            }
+        });
+
+
+
+
         assertEquals(0, consumer.poll(1000).count());
         ConsumerRecord<String, String> rec1 = new ConsumerRecord<String, String>("test", 0, 0, "key1", "value1");
         ConsumerRecord<String, String> rec2 = new ConsumerRecord<String, String>("test", 0, 1, "key2", "value2");

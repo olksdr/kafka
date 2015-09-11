@@ -4,23 +4,35 @@
 // The ASF licenses this file to You under the Apache License, Version 2.0
 // (the "License"); you may not use this file except in compliance with
 // the License.  You may obtain a copy of the License at
-// 
+//
 //    http://www.apache.org/licenses/LICENSE-2.0
-// 
+//
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import org.ajoberstar.grgit.Grgit
+
 buildscript {
   repositories {
     mavenCentral()
   }
   apply from: file('gradle/buildscript.gradle'), to: buildscript
+
+  dependencies {
+    // For Apache Rat plugin to ignore non-Git files, need ancient version for Java 6 compatibility
+    classpath group: 'org.ajoberstar', name: 'grgit', version: '0.2.3'
+  }
 }
 
 def slf4jlog4j='org.slf4j:slf4j-log4j12:1.7.6'
+def slf4japi="org.slf4j:slf4j-api:1.7.6"
+def junit='junit:junit:4.11'
+def easymock='org.easymock:easymock:3.3.1'
+def powermock='org.powermock:powermock-module-junit4:1.6.2'
+def powermock_easymock='org.powermock:powermock-api-easymock:1.6.2'
 
 allprojects {
   apply plugin: 'idea'
@@ -30,16 +42,38 @@ allprojects {
 }
 
 ext {
-    gradleVersion = "2.0"
-}
+    gradleVersion = "2.4"
+    buildVersionFileName = "kafka-version.properties"
 
-def isVerificationRequired(project) {
-    project.gradle.startParameter.taskNames.any { it.contains("upload") }
+    skipSigning = project.hasProperty('skipSigning') && skipSigning.toBoolean()
+    shouldSign = !skipSigning && !version.endsWith("SNAPSHOT")
+
+    mavenUrl = project.hasProperty('mavenUrl') ? project.mavenUrl : ''
+    mavenUsername = project.hasProperty('mavenUsername') ? project.mavenUsername : ''
+    mavenPassword = project.hasProperty('mavenPassword') ? project.mavenPassword : ''
 }
 
 apply from: file('wrapper.gradle')
-apply from: file('gradle/license.gradle')
 apply from: file('scala.gradle')
+apply from: file('gradle/rat.gradle')
+
+rat {
+  // Exclude everything under the directory that git should be ignoring via .gitignore or that isn't checked in. These
+  // restrict us only to files that are checked in or are staged.
+  def repo = Grgit.open(project.file('.'))
+  excludes = new ArrayList<String>(repo.clean(ignore: false, directories: true, dryRun: true))
+  // And some of the files that we have checked in should also be excluded from this check
+  excludes.addAll([
+    '**/.git/**',
+    '**/build/**',
+    'CONTRIBUTING.md',
+    'gradlew',
+    'gradlew.bat',
+    '**/README.md',
+    '.reviewboardrc',
+    'system_test/**',
+  ])
+}
 
 subprojects {
   apply plugin: 'java'
@@ -47,34 +81,31 @@ subprojects {
   apply plugin: 'maven'
   apply plugin: 'signing'
 
-  sourceCompatibility = 1.6
-
-  licenseTest.onlyIf { isVerificationRequired(project) }
+  sourceCompatibility = 1.7
 
   uploadArchives {
     repositories {
       signing {
-          if (isVerificationRequired(project)) {
-              sign configurations.archives
+          required { shouldSign }
+          sign configurations.archives
 
-              // To test locally, replace mavenUrl in ~/.gradle/gradle.properties to file://localhost/tmp/myRepo/
-              mavenDeployer {
-                  beforeDeployment { MavenDeployment deployment -> signing.signPom(deployment) }
-                  repository(url: "${mavenUrl}") {
-                      authentication(userName: "${mavenUsername}", password: "${mavenPassword}")
-                  }
-                  afterEvaluate {
-                      pom.artifactId = "${archivesBaseName}"
-                      pom.project {
-                          name 'Apache Kafka'
-                          packaging 'jar'
-                          url 'http://kafka.apache.org'
-                          licenses {
-                              license {
-                                  name 'The Apache Software License, Version 2.0'
-                                  url 'http://www.apache.org/licenses/LICENSE-2.0.txt'
-                                  distribution 'repo'
-                              }
+          // To test locally, replace mavenUrl in ~/.gradle/gradle.properties to file://localhost/tmp/myRepo/
+          mavenDeployer {
+              beforeDeployment { MavenDeployment deployment -> signing.signPom(deployment) }
+              repository(url: "${mavenUrl}") {
+                  authentication(userName: "${mavenUsername}", password: "${mavenPassword}")
+              }
+              afterEvaluate {
+                  pom.artifactId = "${archivesBaseName}"
+                  pom.project {
+                      name 'Apache Kafka'
+                      packaging 'jar'
+                      url 'http://kafka.apache.org'
+                      licenses {
+                          license {
+                              name 'The Apache Software License, Version 2.0'
+                              url 'http://www.apache.org/licenses/LICENSE-2.0.txt'
+                              distribution 'repo'
                           }
                       }
                   }
@@ -82,6 +113,10 @@ subprojects {
           }
       }
     }
+  }
+
+  tasks.withType(Test) {
+    maxParallelForks = Runtime.runtime.availableProcessors()
   }
 
   jar {
@@ -109,7 +144,7 @@ subprojects {
     archives srcJar
     archives javadocJar
   }
-  
+
   plugins.withType(ScalaPlugin) {
     //source jar should also contain scala source:
     srcJar.from sourceSets.main.scala
@@ -134,12 +169,12 @@ subprojects {
 
     configure(scalaCompileOptions.forkOptions) {
       memoryMaximumSize = '1g'
-      jvmArgs = ['-XX:MaxPermSize=512m']
+      jvmArgs = ['-XX:MaxPermSize=512m', '-Xss2m']
     }
   }
 }
 
-for ( sv in ['2_9_1', '2_9_2', '2_10_5', '2_11_6'] ) {
+for ( sv in ['2_10_5', '2_11_7'] ) {
   String svInDot = sv.replaceAll( "_", ".")
 
   tasks.create(name: "jar_core_${sv}", type: GradleBuild) {
@@ -179,20 +214,25 @@ for ( sv in ['2_9_1', '2_9_2', '2_10_5', '2_11_6'] ) {
   }
 }
 
-tasks.create(name: "jarAll", dependsOn: ['jar_core_2_9_1', 'jar_core_2_9_2', 'jar_core_2_10_5', 'jar_core_2_11_6', 'clients:jar', 'examples:jar', 'contrib:hadoop-consumer:jar', 'contrib:hadoop-producer:jar']) {
+def copycatPkgs = ['copycat:api', 'copycat:runtime', 'copycat:json', 'copycat:file']
+def pkgs = ['clients', 'examples', 'contrib:hadoop-consumer', 'contrib:hadoop-producer', 'log4j-appender', 'tools'] + copycatPkgs
+
+tasks.create(name: "jarCopycat", dependsOn: copycatPkgs.collect { it + ":jar" }) {}
+tasks.create(name: "jarAll", dependsOn: ['jar_core_2_10_5', 'jar_core_2_11_7'] + pkgs.collect { it + ":jar" }) {
 }
 
-tasks.create(name: "srcJarAll", dependsOn: ['srcJar_2_9_1', 'srcJar_2_9_2', 'srcJar_2_10_5', 'srcJar_2_11_6', 'clients:srcJar', 'examples:srcJar', 'contrib:hadoop-consumer:srcJar', 'contrib:hadoop-producer:srcJar']) { }
+tasks.create(name: "srcJarAll", dependsOn: ['srcJar_2_10_5', 'srcJar_2_11_7'] + pkgs.collect { it + ":srcJar" }) { }
 
-tasks.create(name: "docsJarAll", dependsOn: ['docsJar_2_9_1', 'docsJar_2_9_2', 'docsJar_2_10_5', 'docsJar_2_11_6', 'clients:docsJar', 'examples:docsJar', 'contrib:hadoop-consumer:docsJar', 'contrib:hadoop-producer:docsJar']) { }
+tasks.create(name: "docsJarAll", dependsOn: ['docsJar_2_10_5', 'docsJar_2_11_7'] + pkgs.collect { it + ":docsJar" }) { }
 
-tasks.create(name: "testAll", dependsOn: ['test_core_2_9_1', 'test_core_2_9_2', 'test_core_2_10_5', 'test_core_2_11_6', 'clients:test']) {
+tasks.create(name: "testCopycat", dependsOn: copycatPkgs.collect { it + ":test" }) {}
+tasks.create(name: "testAll", dependsOn: ['test_core_2_10_5', 'test_core_2_11_7'] + pkgs.collect { it + ":test" }) {
 }
 
-tasks.create(name: "releaseTarGzAll", dependsOn: ['releaseTarGz_2_9_1', 'releaseTarGz_2_9_2', 'releaseTarGz_2_10_5', 'releaseTarGz_2_11_6']) {
+tasks.create(name: "releaseTarGzAll", dependsOn: ['releaseTarGz_2_10_5', 'releaseTarGz_2_11_7']) {
 }
 
-tasks.create(name: "uploadArchivesAll", dependsOn: ['uploadCoreArchives_2_9_1', 'uploadCoreArchives_2_9_2', 'uploadCoreArchives_2_10_5', 'uploadCoreArchives_2_11_6', 'clients:uploadArchives', 'examples:uploadArchives', 'contrib:hadoop-consumer:uploadArchives', 'contrib:hadoop-producer:uploadArchives']) {
+tasks.create(name: "uploadArchivesAll", dependsOn: ['uploadCoreArchives_2_10_5', 'uploadCoreArchives_2_11_7'] + pkgs.collect { it + ":uploadArchives" }) {
 }
 
 project(':core') {
@@ -201,29 +241,26 @@ project(':core') {
   apply plugin: 'scala'
   archivesBaseName = "kafka_${baseScalaVersion}"
 
-  def (major, minor, trivial) = scalaVersion.tokenize('.')
-
   dependencies {
     compile project(':clients')
+    compile project(':log4j-appender')
     compile "org.scala-lang:scala-library:$scalaVersion"
     compile 'org.apache.zookeeper:zookeeper:3.4.6'
-    compile 'com.101tec:zkclient:0.5'
+    compile 'com.101tec:zkclient:0.6'
     compile 'com.yammer.metrics:metrics-core:2.2.0'
     compile 'net.sf.jopt-simple:jopt-simple:3.2'
-
-    testCompile 'junit:junit:4.6'
-    testCompile 'org.easymock:easymock:3.0'
-    testCompile 'org.objenesis:objenesis:1.2'
-    testCompile project(':clients')
-    if (scalaVersion.startsWith('2.10')) {
-      testCompile 'org.scalatest:scalatest_2.10:1.9.1'
-    } else if (scalaVersion.startsWith('2.11')) {
-      compile 'org.scala-lang.modules:scala-xml_2.11:1.0.3'
-      compile 'org.scala-lang.modules:scala-parser-combinators_2.11:1.0.3'
-      testCompile "org.scalatest:scalatest_2.11:2.2.0"
-    } else {
-      testCompile "org.scalatest:scalatest_$scalaVersion:1.8"
+    if (scalaVersion.startsWith('2.11')) {
+      compile 'org.scala-lang.modules:scala-xml_2.11:1.0.4'
+      compile 'org.scala-lang.modules:scala-parser-combinators_2.11:1.0.4'
     }
+
+    testCompile "$junit"
+    testCompile "$easymock"
+    testCompile 'org.objenesis:objenesis:1.2'
+    testCompile 'org.bouncycastle:bcpkix-jdk15on:1.52'
+    testCompile "org.scalatest:scalatest_$baseScalaVersion:2.2.5"
+    testCompile project(':clients')
+    testCompile project(':clients').sourceSets.test.output
     testRuntime "$slf4jlog4j"
 
     zinc 'com.typesafe.zinc:zinc:0.3.7'
@@ -250,9 +287,9 @@ project(':core') {
     into "$buildDir/dependant-libs-${scalaVersion}"
   }
 
-  tasks.create(name: "releaseTarGz", dependsOn: configurations.archives.artifacts, type: Tar) { 
+  tasks.create(name: "releaseTarGz", dependsOn: configurations.archives.artifacts, type: Tar) {
     into "kafka_${baseScalaVersion}-${version}"
-    compression = Compression.GZIP 
+    compression = Compression.GZIP
     from(project.file("../bin")) { into "bin/" }
     from(project.file("../config")) { into "config/" }
     from '../LICENSE'
@@ -351,12 +388,56 @@ project(':clients') {
   archivesBaseName = "kafka-clients"
 
   dependencies {
-    compile "org.slf4j:slf4j-api:1.7.6"
-    compile 'org.xerial.snappy:snappy-java:1.1.1.6'
+    compile "$slf4japi"
+    compile 'org.xerial.snappy:snappy-java:1.1.1.7'
     compile 'net.jpountz.lz4:lz4:1.2.0'
 
-    testCompile 'com.novocode:junit-interface:0.9'
+    testCompile 'org.bouncycastle:bcpkix-jdk15on:1.52'
+    testCompile "$junit"
     testRuntime "$slf4jlog4j"
+  }
+
+  task determineCommitId {
+    ext.commitId = "unknown"
+    def takeFromHash = 16
+    if (file("../.git/HEAD").exists()) {
+      def headRef = file("../.git/HEAD").text
+      if (headRef.contains('ref: ')) {
+        headRef = headRef.replaceAll('ref: ', '').trim()
+        commitId = file("../.git/$headRef").text.trim().take(takeFromHash)
+      } else {
+        commitId = headRef.trim().take(takeFromHash)
+      }
+    } else {
+      commitId
+    }
+  }
+
+  task createVersionFile(dependsOn: determineCommitId) {
+    ext.receiptFile = file("$buildDir/kafka/$buildVersionFileName")
+    outputs.file receiptFile
+    outputs.upToDateWhen { false }
+    doLast {
+      def data = [
+        commitId: determineCommitId.commitId,
+        version: version,
+      ]
+
+      receiptFile.parentFile.mkdirs()
+      def content = data.entrySet().collect { "$it.key=$it.value" }.sort().join("\n")
+      receiptFile.setText(content, "ISO-8859-1")
+    }
+  }
+
+  jar {
+    dependsOn createVersionFile
+    from("$buildDir") {
+        include "kafka/$buildVersionFileName"
+    }
+  }
+
+  clean.doFirst {
+    delete "$buildDir/kafka/"
   }
 
   task testJar(type: Jar) {
@@ -382,9 +463,289 @@ project(':clients') {
   artifacts {
     archives testJar
   }
-  
+
+  configurations {
+    archives.extendsFrom (testCompile)
+  }
+
   checkstyle {
      configFile = new File(rootDir, "checkstyle/checkstyle.xml")
+  }
+  test.dependsOn('checkstyleMain', 'checkstyleTest')
+}
+
+project(':tools') {
+    apply plugin: 'checkstyle'
+    archivesBaseName = "kafka-tools"
+
+    dependencies {
+        compile project(':clients')
+        compile 'net.sourceforge.argparse4j:argparse4j:0.5.0'
+        compile 'com.fasterxml.jackson.core:jackson-databind:2.5.4'
+        compile "$slf4jlog4j"
+
+        testCompile "$junit"
+        testCompile project(path: ':clients', configuration: 'archives')
+    }
+
+    task testJar(type: Jar) {
+        classifier = 'test'
+        from sourceSets.test.output
+    }
+
+    test {
+        testLogging {
+            events "passed", "skipped", "failed"
+            exceptionFormat = 'full'
+        }
+    }
+
+    javadoc {
+        include "**/org/apache/kafka/tools/*"
+    }
+
+    tasks.create(name: "copyDependantLibs", type: Copy) {
+        from (configurations.testRuntime) {
+            include('slf4j-log4j12*')
+        }
+        from (configurations.runtime) {
+            exclude('kafka-clients*')
+        }
+        into "$buildDir/dependant-libs-${scalaVersion}"
+    }
+
+    jar {
+        dependsOn 'copyDependantLibs'
+    }
+
+    checkstyle {
+        configFile = new File(rootDir, "checkstyle/checkstyle.xml")
+    }
+    test.dependsOn('checkstyleMain', 'checkstyleTest')
+}
+
+project(':log4j-appender') {
+  apply plugin: 'checkstyle'
+  archivesBaseName = "kafka-log4j-appender"
+
+  dependencies {
+    compile project(':clients')
+    compile "$slf4jlog4j"
+
+    testCompile "$junit"
+    testCompile project(path: ':clients', configuration: 'archives')
+  }
+
+  task testJar(type: Jar) {
+    classifier = 'test'
+    from sourceSets.test.output
+  }
+
+  test {
+    testLogging {
+        events "passed", "skipped", "failed"
+        exceptionFormat = 'full'
+    }
+  }
+
+  javadoc {
+    include "**/org/apache/kafka/log4jappender/*"
+  }
+
+  checkstyle {
+     configFile = new File(rootDir, "checkstyle/checkstyle.xml")
+  }
+  test.dependsOn('checkstyleMain', 'checkstyleTest')
+}
+
+project(':copycat:api') {
+  apply plugin: 'checkstyle'
+  archivesBaseName = "copycat-api"
+
+  dependencies {
+    compile "$slf4japi"
+    compile project(':clients')
+
+    testCompile "$junit"
+    testRuntime "$slf4jlog4j"
+  }
+
+  task testJar(type: Jar) {
+    classifier = 'test'
+    from sourceSets.test.output
+  }
+
+  test {
+    testLogging {
+      events "passed", "skipped", "failed"
+      exceptionFormat = 'full'
+    }
+  }
+
+  javadoc {
+    include "**/org/apache/kafka/copycat/*"
+  }
+
+  artifacts {
+    archives testJar
+  }
+
+  configurations {
+    archives.extendsFrom (testCompile)
+  }
+
+  checkstyle {
+    configFile = new File(rootDir, "checkstyle/checkstyle.xml")
+  }
+  test.dependsOn('checkstyleMain', 'checkstyleTest')
+}
+
+project(':copycat:json') {
+  apply plugin: 'checkstyle'
+  archivesBaseName = "copycat-json"
+
+  dependencies {
+    compile project(':copycat:api')
+    compile "$slf4japi"
+    compile 'com.fasterxml.jackson.core:jackson-databind:2.5.4'
+
+    testCompile "$junit"
+    testCompile "$easymock"
+    testCompile "$powermock"
+    testCompile "$powermock_easymock"
+    testRuntime "$slf4jlog4j"
+  }
+
+  task testJar(type: Jar) {
+    classifier = 'test'
+    from sourceSets.test.output
+  }
+
+  test {
+    testLogging {
+      events "passed", "skipped", "failed"
+      exceptionFormat = 'full'
+    }
+  }
+
+  javadoc {
+    include "**/org/apache/kafka/copycat/*"
+  }
+
+  artifacts {
+    archives testJar
+  }
+
+  configurations {
+    archives.extendsFrom(testCompile)
+  }
+
+  checkstyle {
+    configFile = new File(rootDir, "checkstyle/checkstyle.xml")
+  }
+  test.dependsOn('checkstyleMain', 'checkstyleTest')
+
+  tasks.create(name: "copyDependantLibs", type: Copy) {
+    from (configurations.runtime) {
+      exclude('kafka-clients*')
+      exclude('copycat-*')
+    }
+    into "$buildDir/dependant-libs"
+  }
+
+  jar {
+    dependsOn copyDependantLibs
+  }
+}
+
+project(':copycat:runtime') {
+  apply plugin: 'checkstyle'
+  archivesBaseName = "copycat-runtime"
+
+  dependencies {
+    compile project(':copycat:api')
+    compile project(':clients')
+    compile "$slf4japi"
+
+    testCompile "$junit"
+    testCompile "$easymock"
+    testCompile "$powermock"
+    testCompile "$powermock_easymock"
+    testRuntime "$slf4jlog4j"
+    testRuntime project(":copycat:json")
+  }
+
+  task testJar(type: Jar) {
+    classifier = 'test'
+    from sourceSets.test.output
+  }
+
+  test {
+    testLogging {
+      events "passed", "skipped", "failed"
+      exceptionFormat = 'full'
+    }
+  }
+
+  javadoc {
+    include "**/org/apache/kafka/copycat/*"
+  }
+
+  artifacts {
+    archives testJar
+  }
+
+  configurations {
+    archives.extendsFrom(testCompile)
+  }
+
+  checkstyle {
+    configFile = new File(rootDir, "checkstyle/checkstyle.xml")
+  }
+  test.dependsOn('checkstyleMain', 'checkstyleTest')
+}
+
+project(':copycat:file') {
+  apply plugin: 'checkstyle'
+  archivesBaseName = "copycat-file"
+
+  dependencies {
+    compile project(':copycat:api')
+    compile "$slf4japi"
+
+    testCompile "$junit"
+    testCompile "$easymock"
+    testCompile "$powermock"
+    testCompile "$powermock_easymock"
+    testRuntime "$slf4jlog4j"
+  }
+
+  task testJar(type: Jar) {
+    classifier = 'test'
+    from sourceSets.test.output
+  }
+
+  test {
+    testLogging {
+      events "passed", "skipped", "failed"
+      exceptionFormat = 'full'
+    }
+  }
+
+  javadoc {
+    include "**/org/apache/kafka/copycat/*"
+  }
+
+  artifacts {
+    archives testJar
+  }
+
+  configurations {
+    archives.extendsFrom(testCompile)
+  }
+
+  checkstyle {
+    configFile = new File(rootDir, "checkstyle/checkstyle.xml")
   }
   test.dependsOn('checkstyleMain', 'checkstyleTest')
 }

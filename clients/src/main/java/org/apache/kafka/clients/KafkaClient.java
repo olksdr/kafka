@@ -81,13 +81,20 @@ public interface KafkaClient extends Closeable {
     public List<ClientResponse> poll(long timeout, long now);
 
     /**
-     * Complete all in-flight requests for a given node
+     * Closes the connection to a particular node (if there is one).
+     *
+     * @param nodeId The id of the node
+     */
+    public void close(String nodeId);
+
+    /**
+     * Complete all in-flight requests for a given connection
      * 
-     * @param node The node to complete requests for
+     * @param id The connection to complete requests for
      * @param now The current time in ms
      * @return All requests that complete during this time period.
      */
-    public List<ClientResponse> completeAll(int node, long now);
+    public List<ClientResponse> completeAll(String id, long now);
 
     /**
      * Complete all in-flight requests
@@ -117,7 +124,7 @@ public interface KafkaClient extends Closeable {
      * 
      * @param nodeId The id of the node
      */
-    public int inFlightRequestCount(int nodeId);
+    public int inFlightRequestCount(String nodeId);
 
     /**
      * Generate a request header for the next request
@@ -125,6 +132,15 @@ public interface KafkaClient extends Closeable {
      * @param key The API key of the request
      */
     public RequestHeader nextRequestHeader(ApiKeys key);
+
+    /**
+     * Generate a request header for the given API key
+     *
+     * @param key The api key
+     * @param version The api version
+     * @return A request header with the appropriate client id and correlation id
+     */
+    public RequestHeader nextRequestHeader(ApiKeys key, short version);
 
     /**
      * Wake up the client if it is currently blocked waiting for I/O

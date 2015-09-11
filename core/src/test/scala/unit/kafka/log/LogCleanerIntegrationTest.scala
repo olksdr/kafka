@@ -18,6 +18,7 @@
 package kafka.log
 
 import java.io.File
+import java.util.Properties
 
 import kafka.common.TopicAndPartition
 import kafka.message._
@@ -29,16 +30,14 @@ import org.junit._
 import org.junit.runner.RunWith
 import org.junit.runners.Parameterized
 import org.junit.runners.Parameterized.Parameters
-import org.scalatest.junit.JUnit3Suite
 
 import scala.collection._
-
 
 /**
  * This is an integration test that tests the fully integrated log cleaner
  */
 @RunWith(value = classOf[Parameterized])
-class LogCleanerIntegrationTest(compressionCodec: String) extends JUnit3Suite {
+class LogCleanerIntegrationTest(compressionCodec: String) {
 
   val time = new MockTime()
   val segmentSize = 100
@@ -127,8 +126,13 @@ class LogCleanerIntegrationTest(compressionCodec: String) extends JUnit3Suite {
     for(i <- 0 until parts) {
       val dir = new File(logDir, "log-" + i)
       dir.mkdirs()
+      val logProps = new Properties()
+      logProps.put(LogConfig.SegmentBytesProp, segmentSize: java.lang.Integer)
+      logProps.put(LogConfig.SegmentIndexBytesProp, 100*1024: java.lang.Integer)
+      logProps.put(LogConfig.FileDeleteDelayMsProp, deleteDelay: java.lang.Integer)
+      logProps.put(LogConfig.CleanupPolicyProp, LogConfig.Compact)
       val log = new Log(dir = dir,
-                        LogConfig(segmentSize = segmentSize, maxIndexSize = 100*1024, fileDeleteDelayMs = deleteDelay, compact = true),
+                        LogConfig(logProps),
                         recoveryPoint = 0L,
                         scheduler = time.scheduler,
                         time = time)

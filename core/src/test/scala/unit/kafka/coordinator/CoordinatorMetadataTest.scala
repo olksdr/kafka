@@ -20,7 +20,7 @@ package kafka.coordinator
 import kafka.server.KafkaConfig
 import kafka.utils.{ZkUtils, TestUtils}
 
-import junit.framework.Assert._
+import org.junit.Assert._
 import org.I0Itec.zkclient.{IZkDataListener, ZkClient}
 import org.apache.zookeeper.data.Stat
 import org.easymock.EasyMock
@@ -40,7 +40,7 @@ class CoordinatorMetadataTest extends JUnitSuite {
   def setUp() {
     val props = TestUtils.createBrokerConfig(nodeId = 0, zkConnect = "")
     zkClient = EasyMock.createStrictMock(classOf[ZkClient])
-    coordinatorMetadata = new CoordinatorMetadata(KafkaConfig.fromProps(props), zkClient, null)
+    coordinatorMetadata = new CoordinatorMetadata(KafkaConfig.fromProps(props).brokerId, zkClient, null)
   }
 
   @Test

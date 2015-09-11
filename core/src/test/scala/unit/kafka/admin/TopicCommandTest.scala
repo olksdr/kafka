@@ -18,15 +18,15 @@ package kafka.admin
 
 import junit.framework.Assert._
 import org.junit.Test
-import org.scalatest.junit.JUnit3Suite
 import kafka.utils.Logging
 import kafka.utils.TestUtils
 import kafka.zk.ZooKeeperTestHarness
-import kafka.server.{OffsetManager, KafkaConfig}
+import kafka.server.ConfigType
 import kafka.admin.TopicCommand.TopicCommandOptions
 import kafka.utils.ZkUtils
+import kafka.coordinator.ConsumerCoordinator
 
-class TopicCommandTest extends JUnit3Suite with ZooKeeperTestHarness with Logging {
+class TopicCommandTest extends ZooKeeperTestHarness with Logging {
 
   @Test
   def testConfigPreservationAcrossPartitionAlteration() {
@@ -43,20 +43,18 @@ class TopicCommandTest extends JUnit3Suite with ZooKeeperTestHarness with Loggin
       "--config", cleanupKey + "=" + cleanupVal,
       "--topic", topic))
     TopicCommand.createTopic(zkClient, createOpts)
-    val props = AdminUtils.fetchTopicConfig(zkClient, topic)
+    val props = AdminUtils.fetchEntityConfig(zkClient, ConfigType.Topic, topic)
     assertTrue("Properties after creation don't contain " + cleanupKey, props.containsKey(cleanupKey))
     assertTrue("Properties after creation have incorrect value", props.getProperty(cleanupKey).equals(cleanupVal))
 
     // pre-create the topic config changes path to avoid a NoNodeException
-    ZkUtils.createPersistentPath(zkClient, ZkUtils.TopicConfigChangesPath)
+    ZkUtils.createPersistentPath(zkClient, ZkUtils.EntityConfigChangesPath)
 
     // modify the topic to add new partitions
     val numPartitionsModified = 3
-    val alterOpts = new TopicCommandOptions(Array("--partitions", numPartitionsModified.toString,
-      "--config", cleanupKey + "=" + cleanupVal,
-      "--topic", topic))
+    val alterOpts = new TopicCommandOptions(Array("--partitions", numPartitionsModified.toString, "--topic", topic))
     TopicCommand.alterTopic(zkClient, alterOpts)
-    val newProps = AdminUtils.fetchTopicConfig(zkClient, topic)
+    val newProps = AdminUtils.fetchEntityConfig(zkClient, ConfigType.Topic, topic)
     assertTrue("Updated properties do not contain " + cleanupKey, newProps.containsKey(cleanupKey))
     assertTrue("Updated properties have incorrect value", newProps.getProperty(cleanupKey).equals(cleanupVal))
   }
@@ -87,12 +85,12 @@ class TopicCommandTest extends JUnit3Suite with ZooKeeperTestHarness with Loggin
     // create the offset topic
     val createOffsetTopicOpts = new TopicCommandOptions(Array("--partitions", numPartitionsOriginal.toString,
       "--replication-factor", "1",
-      "--topic", OffsetManager.OffsetsTopicName))
+      "--topic", ConsumerCoordinator.OffsetsTopicName))
     TopicCommand.createTopic(zkClient, createOffsetTopicOpts)
 
     // try to delete the OffsetManager.OffsetsTopicName and make sure it doesn't
-    val deleteOffsetTopicOpts = new TopicCommandOptions(Array("--topic", OffsetManager.OffsetsTopicName))
-    val deleteOffsetTopicPath = ZkUtils.getDeleteTopicPath(OffsetManager.OffsetsTopicName)
+    val deleteOffsetTopicOpts = new TopicCommandOptions(Array("--topic", ConsumerCoordinator.OffsetsTopicName))
+    val deleteOffsetTopicPath = ZkUtils.getDeleteTopicPath(ConsumerCoordinator.OffsetsTopicName)
     assertFalse("Delete path for topic shouldn't exist before deletion.", zkClient.exists(deleteOffsetTopicPath))
     intercept[AdminOperationException] {
         TopicCommand.deleteTopic(zkClient, deleteOffsetTopicOpts)

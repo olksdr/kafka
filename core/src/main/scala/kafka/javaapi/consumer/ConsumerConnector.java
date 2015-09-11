@@ -20,6 +20,9 @@ package kafka.javaapi.consumer;
 
 import java.util.List;
 import java.util.Map;
+
+import kafka.common.OffsetAndMetadata;
+import kafka.common.TopicAndPartition;
 import kafka.consumer.KafkaStream;
 import kafka.consumer.TopicFilter;
 import kafka.serializer.Decoder;
@@ -63,6 +66,20 @@ public interface ConsumerConnector {
    */
   public void commitOffsets();
   public void commitOffsets(boolean retryOnFailure);
+
+  /**
+   *  Commit offsets using the provided offsets map
+   *
+   *  @param offsetsToCommit a map containing the offset to commit for each partition.
+   *  @param retryOnFailure enable retries on the offset commit if it fails.
+   */
+  public void commitOffsets(Map<TopicAndPartition, OffsetAndMetadata> offsetsToCommit, boolean retryOnFailure);
+
+  /**
+   * Wire in a consumer rebalance listener to be executed when consumer rebalance occurs.
+   * @param listener The consumer rebalance listener to wire in
+   */
+  public void setConsumerRebalanceListener(ConsumerRebalanceListener listener);
 
   /**
    *  Shut down the connector

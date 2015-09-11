@@ -30,7 +30,12 @@ public class JoinGroupResponse extends AbstractRequestResponse {
     /**
      * Possible error code:
      *
-     * TODO
+     * CONSUMER_COORDINATOR_NOT_AVAILABLE (15)
+     * NOT_COORDINATOR_FOR_CONSUMER (16)
+     * INCONSISTENT_PARTITION_ASSIGNMENT_STRATEGY (23)
+     * UNKNOWN_PARTITION_ASSIGNMENT_STRATEGY (24)
+     * UNKNOWN_CONSUMER_ID (25)
+     * INVALID_SESSION_TIMEOUT (26)
      */
 
     private static final String GENERATION_ID_KEY_NAME = "group_generation_id";
@@ -68,10 +73,6 @@ public class JoinGroupResponse extends AbstractRequestResponse {
         this.generationId = generationId;
         this.consumerId = consumerId;
         this.assignedPartitions = assignedPartitions;
-    }
-
-    public JoinGroupResponse(short errorCode) {
-        this(errorCode, UNKNOWN_GENERATION_ID, UNKNOWN_CONSUMER_ID, Collections.<TopicPartition>emptyList());
     }
 
     public JoinGroupResponse(Struct struct) {

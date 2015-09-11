@@ -22,14 +22,17 @@ VAGRANTFILE_API_VERSION = "2"
 
 # General config
 enable_dns = false
+enable_jmx = false
 num_zookeepers = 1
 num_brokers = 3
 num_workers = 0 # Generic workers that get the code, but don't start any services
 ram_megabytes = 1280
+base_box = "ubuntu/trusty64"
 
 # EC2
 ec2_access_key = ENV['AWS_ACCESS_KEY']
 ec2_secret_key = ENV['AWS_SECRET_KEY']
+ec2_session_token = ENV['AWS_SESSION_TOKEN']
 ec2_keypair_name = nil
 ec2_keypair_file = nil
 
@@ -49,6 +52,24 @@ if File.exists?(local_config_file) then
   eval(File.read(local_config_file), binding, "Vagrantfile.local")
 end
 
+# This is a horrible hack to work around bad interactions between
+# vagrant-hostmanager and vagrant-aws/vagrant's implementation. Hostmanager
+# wants to update the /etc/hosts entries, but tries to do so even on nodes that
+# aren't up (e.g. even when all nodes are stopped and you run vagrant
+# destroy). Because of the way the underlying code in vagrant works, it still
+# tries to communicate with the node and has to wait for a very long
+# timeout. This modifies the update to check for hosts that are not created or
+# stopped, skipping the update in that case since it's impossible to update
+# nodes in that state.
+Object.const_get("VagrantPlugins").const_get("HostManager").const_get("HostsFile").class_eval do
+  alias_method :old_update_guest, :update_guest
+  def update_guest(machine)
+    state_id = machine.state.id
+    return if state_id == :not_created || state_id == :stopped
+    old_update_guest(machine)
+  end
+end
+
 # TODO(ksweeney): RAM requirements are not empirical and can probably be significantly lowered.
 Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
   config.hostmanager.enabled = true
@@ -57,7 +78,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 
   ## Provider-specific global configs
   config.vm.provider :virtualbox do |vb,override|
-    override.vm.box = "ubuntu/trusty64"
+    override.vm.box = base_box
 
     override.hostmanager.ignore_private_ip = false
 
@@ -66,14 +87,14 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
     vb.customize ["modifyvm", :id, "--memory", ram_megabytes.to_s]
 
     if Vagrant.has_plugin?("vagrant-cachier")
-      config.cache.scope = :box
+      override.cache.scope = :box
       # Besides the defaults, we use a custom cache to handle the Oracle JDK
       # download, which downloads via wget during an apt install. Because of the
       # way the installer ends up using its cache directory, we need to jump
       # through some hoops instead of just specifying a cache directly -- we
       # share to a temporary location and the provisioning scripts symlink data
       # to the right location.
-      config.cache.enable :generic, {
+      override.cache.enable :generic, {
         "oracle-jdk7" => { cache_dir: "/tmp/oracle-jdk7-installer-cache" },
       }
     end
@@ -84,13 +105,31 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
     override.vm.box = "dummy"
     override.vm.box_url = "https://github.com/mitchellh/vagrant-aws/raw/master/dummy.box"
 
-    override.hostmanager.ignore_private_ip = true
+    cached_addresses = {}
+    # Use a custom resolver that SSH's into the machine and finds the IP address
+    # directly. This lets us get at the private IP address directly, avoiding
+    # some issues with using the default IP resolver, which uses the public IP
+    # address.
+    override.hostmanager.ip_resolver = proc do |vm, resolving_vm|
+      if !cached_addresses.has_key?(vm.name)
+        state_id = vm.state.id
+        if state_id != :not_created && state_id != :stopped && vm.communicate.ready?
+          vm.communicate.execute("/sbin/ifconfig eth0 | grep 'inet addr' | tail -n 1 | egrep -o '[0-9\.]+' | head -n 1 2>&1") do |type, contents|
+            cached_addresses[vm.name] = contents.split("\n").first[/(\d+\.\d+\.\d+\.\d+)/, 1]
+          end
+        else
+          cached_addresses[vm.name] = nil
+        end
+      end
+      cached_addresses[vm.name]
+    end
 
     override.ssh.username = ec2_user
     override.ssh.private_key_path = ec2_keypair_file
 
     aws.access_key_id = ec2_access_key
     aws.secret_access_key = ec2_secret_key
+    aws.session_token = ec2_session_token
     aws.keypair_name = ec2_keypair_name
 
     aws.region = ec2_region
@@ -109,7 +148,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
     end
 
     # Exclude some directories that can grow very large from syncing
-    config.vm.synced_folder ".", "/vagrant", type: "rsync", :rsync_excludes => ['.git', 'core/data/', 'logs/', 'system_test/']
+    override.vm.synced_folder ".", "/vagrant", type: "rsync", :rsync_excludes => ['.git', 'core/data/', 'logs/', 'system_test/', 'tests/results/', 'results/']
   end
 
   def name_node(node, name)
@@ -135,7 +174,8 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
       ip_address = "192.168.50." + (10 + i).to_s
       assign_local_ip(zookeeper, ip_address)
       zookeeper.vm.provision "shell", path: "vagrant/base.sh"
-      zookeeper.vm.provision "shell", path: "vagrant/zk.sh", :args => [i.to_s, num_zookeepers]
+      zk_jmx_port = enable_jmx ? (8000 + i).to_s : ""
+      zookeeper.vm.provision "shell", path: "vagrant/zk.sh", :args => [i.to_s, num_zookeepers, zk_jmx_port]
     end
   }
 
@@ -151,7 +191,8 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
       # used to support clients running on the host.
       zookeeper_connect = zookeepers.map{ |zk_addr| zk_addr + ":2181"}.join(",")
       broker.vm.provision "shell", path: "vagrant/base.sh"
-      broker.vm.provision "shell", path: "vagrant/broker.sh", :args => [i.to_s, enable_dns ? name : ip_address, zookeeper_connect]
+      kafka_jmx_port = enable_jmx ? (9000 + i).to_s : ""
+      broker.vm.provision "shell", path: "vagrant/broker.sh", :args => [i.to_s, enable_dns ? name : ip_address, zookeeper_connect, kafka_jmx_port]
     end
   }
 

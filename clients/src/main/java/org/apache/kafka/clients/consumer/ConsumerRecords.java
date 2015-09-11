@@ -23,10 +23,12 @@ import java.util.Map;
 
 /**
  * A container that holds the list {@link ConsumerRecord} per partition for a
- * particular topic. There is one for every topic returned by a
- * {@link Consumer#poll(long)} operation.
+ * particular topic. There is one {@link ConsumerRecord} list for every topic
+ * partition returned by a {@link Consumer#poll(long)} operation.
  */
 public class ConsumerRecords<K, V> implements Iterable<ConsumerRecord<K, V>> {
+    public static final ConsumerRecords<Object, Object> EMPTY =
+            new ConsumerRecords<Object, Object>(Collections.EMPTY_MAP);
 
     private final Map<TopicPartition, List<ConsumerRecord<K, V>>> records;
 
@@ -101,6 +103,15 @@ public class ConsumerRecords<K, V> implements Iterable<ConsumerRecord<K, V>> {
                 }
             };
         }
+    }
+
+    public boolean isEmpty() {
+        return records.isEmpty();
+    }
+
+    @SuppressWarnings("unchecked")
+    public static <K, V> ConsumerRecords<K, V> empty() {
+        return (ConsumerRecords<K, V>) EMPTY;
     }
 
 }

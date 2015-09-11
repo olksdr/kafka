@@ -119,7 +119,7 @@ class PartitionStateMachine(controller: KafkaController) extends Logging {
           handleStateChange(topicAndPartition.topic, topicAndPartition.partition, OnlinePartition, controller.offlinePartitionSelector,
                             (new CallbackBuilder).build)
       }
-      brokerRequestBatch.sendRequestsToBrokers(controller.epoch, controllerContext.correlationId.getAndIncrement)
+      brokerRequestBatch.sendRequestsToBrokers(controller.epoch)
     } catch {
       case e: Throwable => error("Error while moving some partitions to the online state", e)
       // TODO: It is not enough to bail out and log an error, it is important to trigger leader election for those partitions
@@ -144,7 +144,7 @@ class PartitionStateMachine(controller: KafkaController) extends Logging {
       partitions.foreach { topicAndPartition =>
         handleStateChange(topicAndPartition.topic, topicAndPartition.partition, targetState, leaderSelector, callbacks)
       }
-      brokerRequestBatch.sendRequestsToBrokers(controller.epoch, controllerContext.correlationId.getAndIncrement)
+      brokerRequestBatch.sendRequestsToBrokers(controller.epoch)
     }catch {
       case e: Throwable => error("Error while moving some partitions to %s state".format(targetState), e)
       // TODO: It is not enough to bail out and log an error, it is important to trigger state changes for those partitions
@@ -188,7 +188,6 @@ class PartitionStateMachine(controller: KafkaController) extends Logging {
         case NewPartition =>
           // pre: partition did not exist before this
           assertValidPreviousStates(topicAndPartition, List(NonExistentPartition), NewPartition)
-          assignReplicasToPartitions(topic, partition)
           partitionState.put(topicAndPartition, NewPartition)
           val assignedReplicas = controllerContext.partitionReplicaAssignment(topicAndPartition).mkString(",")
           stateChangeLogger.trace("Controller %d epoch %d changed partition %s state from %s to %s with assigned replicas %s"
@@ -266,19 +265,8 @@ class PartitionStateMachine(controller: KafkaController) extends Logging {
   }
 
   /**
-   * Invoked on the NonExistentPartition->NewPartition state transition to update the controller's cache with the
-   * partition's replica assignment.
-   * @param topic     The topic of the partition whose replica assignment is to be cached
-   * @param partition The partition whose replica assignment is to be cached
-   */
-  private def assignReplicasToPartitions(topic: String, partition: Int) {
-    val assignedReplicas = ZkUtils.getReplicasForPartition(controllerContext.zkClient, topic, partition)
-    controllerContext.partitionReplicaAssignment += TopicAndPartition(topic, partition) -> assignedReplicas
-  }
-
-  /**
    * Invoked on the NewPartition->OnlinePartition state change. When a partition is in the New state, it does not have
-   * a leader and isr path in zookeeper. Once the partition moves to the OnlinePartition state, it's leader and isr
+   * a leader and isr path in zookeeper. Once the partition moves to the OnlinePartition state, its leader and isr
    * path gets initialized and it never goes back to the NewPartition state. From here, it can only go to the
    * OfflinePartition state.
    * @param topicAndPartition   The topic/partition whose leader and isr path is to be initialized
@@ -526,6 +514,7 @@ class PartitionStateMachine(controller: KafkaController) extends Logging {
           else {
             if (partitionsToBeAdded.size > 0) {
               info("New partitions to be added %s".format(partitionsToBeAdded))
+              controllerContext.partitionReplicaAssignment.++=(partitionsToBeAdded)
               controller.onNewPartitionCreation(partitionsToBeAdded.keySet.toSet)
             }
           }

@@ -17,16 +17,15 @@
 package kafka.admin
 
 import kafka.log.Log
-import org.scalatest.junit.JUnit3Suite
 import kafka.zk.ZooKeeperTestHarness
 import junit.framework.Assert._
 import kafka.utils.{ZkUtils, TestUtils}
 import kafka.server.{KafkaServer, KafkaConfig}
 import org.junit.Test
 import java.util.Properties
-import kafka.common.TopicAndPartition
+import kafka.common.{TopicAlreadyMarkedForDeletionException, TopicAndPartition}
 
-class DeleteTopicTest extends JUnit3Suite with ZooKeeperTestHarness {
+class DeleteTopicTest extends ZooKeeperTestHarness {
 
   @Test
   def testDeleteTopicWithAllAliveReplicas() {
@@ -246,6 +245,27 @@ class DeleteTopicTest extends JUnit3Suite with ZooKeeperTestHarness {
     AdminUtils.deleteTopic(zkClient, "test")
     TestUtils.verifyTopicDeletion(zkClient, "test", 1, servers)
 
+    servers.foreach(_.shutdown())
+  }
+
+  @Test
+  def testDeleteTopicAlreadyMarkedAsDeleted() {
+    val topicAndPartition = TopicAndPartition("test", 0)
+    val topic = topicAndPartition.topic
+    val servers = createTestTopicAndCluster(topic)
+
+    try {
+      // start topic deletion
+      AdminUtils.deleteTopic(zkClient, topic)
+      // try to delete topic marked as deleted
+      AdminUtils.deleteTopic(zkClient, topic)
+      fail("Expected TopicAlreadyMarkedForDeletionException")
+    }
+    catch {
+      case e: TopicAlreadyMarkedForDeletionException => // expected exception
+    }
+
+    TestUtils.verifyTopicDeletion(zkClient, topic, 1, servers)
     servers.foreach(_.shutdown())
   }
 

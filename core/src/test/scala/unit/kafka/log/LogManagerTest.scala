@@ -18,38 +18,43 @@
 package kafka.log
 
 import java.io._
-import junit.framework.Assert._
-import org.junit.Test
-import org.scalatest.junit.JUnit3Suite
-import kafka.server.{BrokerState, OffsetCheckpoint}
-import kafka.common._
-import kafka.utils._
+import java.util.Properties
 
-class LogManagerTest extends JUnit3Suite {
+import kafka.common._
+import kafka.server.OffsetCheckpoint
+import kafka.utils._
+import org.junit.Assert._
+import org.junit.{After, Before, Test}
+
+class LogManagerTest {
 
   val time: MockTime = new MockTime()
   val maxRollInterval = 100
   val maxLogAgeMs = 10*60*60*1000
-  val logConfig = LogConfig(segmentSize = 1024, maxIndexSize = 4096, retentionMs = maxLogAgeMs)
+  val logProps = new Properties()
+  logProps.put(LogConfig.SegmentBytesProp, 1024: java.lang.Integer)
+  logProps.put(LogConfig.SegmentIndexBytesProp, 4096: java.lang.Integer)
+  logProps.put(LogConfig.RetentionMsProp, maxLogAgeMs: java.lang.Integer)
+  val logConfig = LogConfig(logProps)
   var logDir: File = null
   var logManager: LogManager = null
   val name = "kafka"
   val veryLargeLogFlushInterval = 10000000L
 
-  override def setUp() {
-    super.setUp()
+  @Before
+  def setUp() {
     logDir = TestUtils.tempDir()
     logManager = createLogManager()
     logManager.startup
     logDir = logManager.logDirs(0)
   }
 
-  override def tearDown() {
+  @After
+  def tearDown() {
     if(logManager != null)
       logManager.shutdown()
     CoreUtils.rm(logDir)
     logManager.logDirs.foreach(CoreUtils.rm(_))
-    super.tearDown()
   }
   
   /**
@@ -113,8 +118,11 @@ class LogManagerTest extends JUnit3Suite {
   def testCleanupSegmentsToMaintainSize() {
     val setSize = TestUtils.singleMessageSet("test".getBytes()).sizeInBytes
     logManager.shutdown()
+    val logProps = new Properties()
+    logProps.put(LogConfig.SegmentBytesProp, 10 * setSize: java.lang.Integer)
+    logProps.put(LogConfig.RetentionBytesProp, 5L * 10L * setSize + 10L: java.lang.Long)
+    val config = LogConfig.fromProps(logConfig.originals, logProps)
 
-    val config = logConfig.copy(segmentSize = 10 * setSize, retentionSize = 5L * 10L * setSize + 10L)
     logManager = createLogManager()
     logManager.startup
 
@@ -154,7 +162,10 @@ class LogManagerTest extends JUnit3Suite {
   @Test
   def testTimeBasedFlush() {
     logManager.shutdown()
-    val config = logConfig.copy(flushMs = 1000)
+    val logProps = new Properties()
+    logProps.put(LogConfig.FlushMsProp, 1000: java.lang.Integer)
+    val config = LogConfig.fromProps(logConfig.originals, logProps)
+
     logManager = createLogManager()
     logManager.startup
     val log = logManager.createLog(TopicAndPartition(name, 0), config)
